@@ -1,0 +1,45 @@
+name: Fixed Windows Executable Build
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup MinGW
+      uses: egor-tensin/setup-mingw@v2
+      with:
+        platform: x64
+        static: 1
+
+    - name: Build Chess Engine
+      shell: cmd
+      run: |
+        cd src
+        g++ -std=c++17 -O2 -static -static-libgcc -static-libstdc++ -DNDEBUG -DUSE_POPCNT -o stockfish.exe benchmark.cpp betza.cpp bitbase.cpp bitboard.cpp endgame.cpp evaluate.cpp main.cpp material.cpp misc.cpp movegen.cpp movepick.cpp pawns.cpp position.cpp psqt.cpp search.cpp thread.cpp timeman.cpp tt.cpp uci.cpp ucioption.cpp xboard.cpp syzygy/tbprobe.cpp
+
+    - name: Verify Build
+      shell: cmd
+      run: |
+        cd src
+        if exist stockfish.exe (
+          echo SUCCESS: Stockfish built successfully
+          dir stockfish.exe
+          for %%f in (stockfish.exe) do echo Size: %%~zf bytes
+        ) else (
+          echo ERROR: Build failed
+          exit /b 1
+        )
+
+    - name: Upload Executable
+      uses: actions/upload-artifact@v4
+      with:
+        name: stockfish-windows-x64.exe
+        path: src/stockfish.exe
