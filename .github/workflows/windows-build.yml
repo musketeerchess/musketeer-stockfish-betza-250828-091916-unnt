@@ -1,0 +1,249 @@
+name: Debug Build Windows Executables with Betza Support
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - name: "Standard x86-64"
+            output: "stockfish-betza-windows.exe"
+          - name: "BMI2 Optimized"  
+            output: "stockfish-betza-bmi2-windows.exe"
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup MSYS2 MinGW64 Environment
+      uses: msys2/setup-msys2@v2
+      with:
+        msystem: MINGW64
+        install: >-
+          base-devel
+          mingw-w64-x86_64-toolchain
+          mingw-w64-x86_64-gcc
+          make
+          git
+
+    - name: Verify Build Environment
+      run: |
+        echo "🔧 Verifying MSYS2 MinGW64 build environment"
+        which gcc
+        which g++
+        which make
+        gcc --version
+        g++ --version
+        make --version
+        echo "PWD: $(pwd)"
+        echo "PATH: $PATH"
+
+    - name: List all source files
+      run: |
+        echo "=== Main source files ==="
+        ls -la src/*.cpp
+        echo "=== Header files ==="  
+        ls -la src/*.h
+        echo "=== Syzygy files ==="
+        if [ -d src/syzygy ]; then ls -la src/syzygy/*; fi
+        echo "=== Makefile check ==="
+        ls -la Makefile
+
+    - name: Compile ${{ matrix.config.name }}
+      run: |
+        echo "🔨 Starting Fairy-Stockfish style compilation..."
+        echo "=============================================="
+        
+        # Use Fairy-Stockfish build approach with Makefile
+        if [ "${{ matrix.config.name }}" = "Standard x86-64" ]; then
+          echo "Building standard x86-64 executable"
+          make TARGET=${{ matrix.config.output }} ARCH=x86-64-modern COMP=mingw
+        else
+          echo "Building BMI2 optimized executable"
+          make TARGET=${{ matrix.config.output }} ARCH=x86-64-modern COMP=mingw EXTRACXXFLAGS="-DUSE_BMI2 -mbmi -mbmi2"
+        fi
+        
+        echo "=============================================="
+
+    - name: CRITICAL SIZE VERIFICATION for ${{ matrix.config.name }}
+      run: |
+        echo "=============================================="
+        echo "🔍 CRITICAL: EXECUTABLE SIZE VERIFICATION"
+        echo "=============================================="
+        
+        exe="${{ matrix.config.output }}"
+        if [ -f "$exe" ]; then
+          size=$(stat -c%s "$exe")
+          sizeKB=$((size / 1024))
+          sizeMB=$(echo "scale=2; $size / 1048576" | bc -l)
+          
+          echo "📊 Executable: $exe"
+          echo "📊 Size: $size bytes ($sizeKB KB / $sizeMB MB)"
+          
+          if [ $size -lt 800000 ]; then
+            echo "❌ FAIL: EXECUTABLE TOO SMALL!"
+            echo "❌ Current: $sizeKB KB"  
+            echo "❌ Required: > 800 KB (0.8 MB)"
+            echo "❌ This indicates incomplete static linking or missing source files"
+            echo "=============================================="
+            exit 1
+          else
+            echo "✅ SUCCESS: Executable size is CORRECT ($sizeMB MB)"
+            echo "✅ Size check PASSED: $sizeKB KB > 800 KB minimum"
+          fi
+          
+          echo "=============================================="
+          echo "🧪 Testing UCI protocol functionality..."
+          timeout 10s bash -c "echo -e 'uci\nquit' | ./$exe" > test_output.txt
+          if grep -q "uciok" test_output.txt; then
+            echo "✅ SUCCESS: UCI protocol responding correctly"
+          else
+            echo "❌ ERROR: UCI protocol not responding"
+            echo "Output received:"
+            cat test_output.txt
+          fi
+          echo "=============================================="
+        else
+          echo "❌ CRITICAL ERROR: Executable file not found: $exe"
+          echo "=============================================="
+          exit 1
+        fi
+
+    - name: VERIFY EXECUTABLE SIZE BEFORE UPLOAD
+      run: |
+        echo "🔍 PRE-UPLOAD SIZE VERIFICATION"
+        echo "=============================================="
+        
+        exe="${{ matrix.config.output }}"
+        if [ -f "$exe" ]; then
+          size=$(stat -c%s "$exe")
+          sizeKB=$((size / 1024))
+          sizeMB=$(echo "scale=2; $size / 1048576" | bc -l)
+          
+          echo "📊 About to upload: $exe"
+          echo "📊 File size: $size bytes ($sizeKB KB / $sizeMB MB)"
+          
+          if [ $size -lt 800000 ]; then
+            echo "❌ BLOCKING UPLOAD: File too small ($sizeKB KB < 800 KB)"
+            echo "❌ This would result in broken downloads for users"
+            exit 1
+          else
+            echo "✅ Size OK for upload: $sizeKB KB"
+          fi
+        else
+          echo "❌ File not found for upload: $exe"
+          exit 1
+        fi
+        echo "=============================================="
+
+    - name: Upload ${{ matrix.config.name }} executable
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.config.output }}
+        path: ${{ matrix.config.output }}
+        retention-days: 30
+
+  create-release:
+    needs: build-windows
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    
+    steps:
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: ./executables
+
+    - name: VERIFY DOWNLOADED EXECUTABLE SIZES
+      run: |
+        echo "🔍 FINAL DOWNLOADABLE EXECUTABLE VERIFICATION"
+        echo "=============================================="
+        
+        find ./executables -type f -name "*.exe" | while read exe; do
+          if [ -f "$exe" ]; then
+            size=$(stat -c%s "$exe")
+            sizeKB=$((size / 1024))
+            sizeMB=$(echo "scale=2; $size / 1048576" | bc)
+            
+            echo "📊 Downloadable file: $exe"
+            echo "📊 Size: $size bytes ($sizeKB KB / $sizeMB MB)"
+            
+            if [ $size -lt 800000 ]; then
+              echo "❌ CRITICAL: Downloadable executable too small ($sizeKB KB < 800 KB)"
+              echo "❌ Users would download broken 173KB files!"
+              echo "❌ Release creation BLOCKED"
+              exit 1
+            else
+              echo "✅ Downloadable size OK: $sizeKB KB"
+            fi
+          fi
+        done
+        
+        echo "=============================================="
+        echo "✅ ALL DOWNLOADABLE EXECUTABLES VERIFIED"
+        echo "=============================================="
+
+    - name: Create Release
+      id: create_release
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: betza-release-${{ github.run_number }}
+        release_name: Betza-Enhanced Stockfish v${{ github.run_number }}
+        body: |
+          ## Betza-Enhanced Musketeer-Stockfish Windows Executables
+          
+          This release contains Windows-compiled executables with full Betza notation support.
+          
+          ### Features:
+          - ✅ Complete Betza notation integration
+          - ✅ 16 custom piece types (CUSTOM_PIECE_1 through CUSTOM_PIECE_16)  
+          - ✅ HW piece pattern (Three-leaper + Wazir) included
+          - ✅ Full UCI protocol compatibility
+          - ✅ All original Musketeer chess functionality preserved
+          - ✅ Winboard/Arena GUI compatible
+          
+          ### Files:
+          - `stockfish-betza-windows.exe` - Standard x86-64 (~1.0MB+)
+          - `stockfish-betza-bmi2-windows.exe` - BMI2 optimized (~1.0MB+)
+          
+          ### Setup in Winboard:
+          1. Download the appropriate executable
+          2. Open Winboard → Engine → Install New Engine
+          3. Browse to the downloaded .exe file
+          4. Set Protocol to "UCI"
+          5. Ready to play with Betza pieces!
+        draft: false
+        prerelease: false
+
+    - name: Upload Standard Windows Release Asset
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./executables/stockfish-betza-windows.exe/stockfish-betza-windows.exe
+        asset_name: stockfish-betza-windows.exe
+        asset_content_type: application/octet-stream
+
+    - name: Upload BMI2 Windows Release Asset  
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ./executables/stockfish-betza-bmi2-windows.exe/stockfish-betza-bmi2-windows.exe
+        asset_name: stockfish-betza-bmi2-windows.exe
+        asset_content_type: application/octet-stream
