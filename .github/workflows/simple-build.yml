@@ -1,0 +1,93 @@
+name: Simple Windows Build - Debug Version
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  simple-build:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup MinGW
+      uses: egor-tensin/setup-mingw@v2
+      with:
+        platform: x64
+        static: 1
+
+    - name: Debug Environment
+      run: |
+        echo "=== Environment Debug ==="
+        where gcc
+        where g++
+        gcc --version
+        g++ --version
+        echo "=== Current Directory ==="
+        dir
+        echo "=== Source Files ==="
+        if exist src dir src
+        echo "=== Makefile Check ==="
+        if exist Makefile type Makefile
+
+    - name: Ultra Simple Compilation Test
+      shell: cmd
+      run: |
+        echo "=== Testing minimal compilation ==="
+        cd src
+        echo "=== Source files available ==="
+        dir *.cpp
+        echo "=== Testing basic includes first ==="
+        g++ -std=c++17 -c -o test1.o minimal-test.cpp
+        if exist test1.o (
+          echo "SUCCESS: Basic includes work"
+        ) else (
+          echo "FAILED: Basic includes broken"
+        )
+        echo "=== Attempting minimal engine compile ==="
+        g++ -std=c++17 -O2 -static -static-libgcc -static-libstdc++ -o test-minimal.exe main.cpp misc.cpp uci.cpp bitboard.cpp position.cpp 2> error.log
+        echo "=== Check compilation errors ==="
+        if exist error.log type error.log
+        echo "=== Check if minimal exe created ==="
+        if exist test-minimal.exe (
+          echo "SUCCESS: Minimal compilation worked"
+          dir test-minimal.exe
+          for %%f in (test-minimal.exe) do echo Size: %%~zf bytes
+        ) else (
+          echo "FAILED: Minimal compilation failed"
+        )
+
+    - name: Full Source Compilation
+      shell: cmd
+      run: |
+        echo "=== Full Source Compilation ==="
+        cd src
+        echo "=== Compiling all source files directly ==="
+        g++ -std=c++17 -O2 -static -static-libgcc -static-libstdc++ ^
+          -DNDEBUG -DUSE_POPCNT ^
+          -o stockfish-simple.exe ^
+          benchmark.cpp betza.cpp bitbase.cpp bitboard.cpp endgame.cpp ^
+          evaluate.cpp main.cpp material.cpp misc.cpp movegen.cpp ^
+          movepick.cpp pawns.cpp position.cpp psqt.cpp search.cpp ^
+          thread.cpp timeman.cpp tt.cpp uci.cpp ucioption.cpp xboard.cpp ^
+          syzygy/tbprobe.cpp
+        
+        echo "=== Check final executable ==="
+        if exist stockfish-simple.exe (
+          echo "SUCCESS: Full compilation worked"
+          dir stockfish-simple.exe
+          for %%f in (stockfish-simple.exe) do echo Size: %%~zf bytes
+        ) else (
+          echo "FAILED: Full compilation failed - checking for errors"
+          echo "Last error code: %ERRORLEVEL%"
+        )
+
+    - name: Upload Simple Build
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: simple-stockfish.exe
+        path: src/stockfish-simple.exe
